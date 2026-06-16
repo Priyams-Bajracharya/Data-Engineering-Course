@@ -124,3 +124,24 @@ where
 -- The records are valid if we are just observing the count, rides frequently start and end within the same city.
 --However, if we look into the rides that were actually fulfilled: only 100 rides had the status 'completed', 
 -- while the remaining 92 resulted in a 'no_show'.
+
+---Now taking distance and fare into account:
+
+SELECT
+    ride_status, 
+    COUNT(*) AS total_same_city_rides, 
+    ROUND(AVG(ride_distance_km), 2) AS avg_distance,
+    MIN(ride_distance_km) AS min_distance,
+    MAX(ride_distance_km) AS max_distance, 
+    ROUND(AVG(fare_amount), 2) AS avg_amount, 
+    MIN(fare_amount) AS min_amount, 
+    MAX(fare_amount) AS max_amount
+FROM rides
+WHERE pickup_city = dropoff_city 
+GROUP BY ride_status;
+
+
+---The data records are completely invalid for 'cancelled' and 'no_show' statuses.
+-- The system is incorrectly tracking distances and charging full fares for passengers who either cancelled or never showed up.
+-- This glitch is so severe that the average distance (23.89 km) and fare (579.03) of unfulfilled rides are actually higher 
+-- than those of completed ones.
