@@ -25,6 +25,9 @@ Test your function with:
 import psycopg2
 import logging
 import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -42,16 +45,16 @@ DB_CONFIG = dict(
 
 INSERT_SQL = """
     INSERT INTO trips (
-        driver_id, rider_id,
+        driver_id, passenger_id,
         pickup_location_id, dropoff_location_id,
         fare_amount, distance_km, status,
-        requested_at, completed_at, rating, payment_method
+        requested_at, completed_at, rating, payment_method_id
     ) VALUES (
-        %(driver_id)s, %(rider_id)s,
+        %(driver_id)s, %(passenger_id)s,
         %(pickup_location_id)s, %(dropoff_location_id)s,
         %(fare_amount)s, %(distance_km)s, %(status)s,
         %(requested_at)s, %(completed_at)s,
-        %(rating)s, %(payment_method)s
+        %(rating)s, %(payment_method_id)s
     )
 """
 
@@ -85,8 +88,17 @@ def load_batch(conn, rows: list) -> int:
     #
     # Hint: use a try / except / else pattern, or try / except with raise
 
-    pass  # replace this
+    with conn.cursor() as curr:
+        for index , row in enumerate(rows) :
+            try:
+                curr.execute(INSERT_SQL , row)
+            except Exception as e:
+                logger.error(f"Row {index + 1  } failed : {e}")
+                conn.rollback()
 
+                raise
+        conn.commit()
+        return len(rows)
 
 def get_test_batches():
     """
@@ -95,14 +107,14 @@ def get_test_batches():
       - bad_batch:  5 trips where row 3 has an invalid rating (should roll back)
     """
     base = dict(
-        driver_id=1, rider_id=1,
+        driver_id=1, passenger_id=1,
         pickup_location_id=1, dropoff_location_id=2,
         fare_amount=250.00, distance_km=8.5,
         status="completed",
         requested_at="2025-01-15 09:00:00",
         completed_at="2025-01-15 09:35:00",
         rating=4.5,
-        payment_method="cash"
+        payment_method_id=3
     )
 
     good_batch = [{**base, "fare_amount": 100 * (i + 1)} for i in range(5)]
@@ -119,6 +131,7 @@ def get_test_batches():
 
 def main():
     conn = psycopg2.connect(**DB_CONFIG)
+    conn.autocommit = False
     good_batch, bad_batch = get_test_batches()
 
     count_before = None
