@@ -33,15 +33,18 @@ import psycopg2.extras
 import random
 import logging
 import time
+import os
 from datetime import datetime, timedelta
+from dotenv import load_dotenv
 
+load_dotenv()
 # ── Configuration ─────────────────────────────────────────────────
 DB_CONFIG = dict(
-    host="localhost",
-    port=5432,
-    dbname="ride_share",
-    user="postgres",
-    password="hello123",
+    host=os.getenv("DB_HOST"),
+    port = os.getenv("DB_PORT"),
+    dbname = os.getenv("DB_NAME"),
+    user= os.getenv("DB_USER"),
+    password=os.getenv("DB_PASSWORD")
 )
 
 BATCH_SIZE  = 10_000    # rows per transaction — larger = faster load
