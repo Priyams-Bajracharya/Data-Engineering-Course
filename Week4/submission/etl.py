@@ -28,12 +28,20 @@ DEST_DB_CONFIG = dict(
     password=os.getenv("DEST_DB_PASSWORD")
 )
 
+def get_watermark(conn):
+    with conn.cursor() as curr:
+        watermark_sql = """
+        select coalesce(max(requested_at),'1990-01-01') from fact_trips
+"""
+        curr.execute(watermark_sql)
+        watermark = curr.fetchone()[0]
+        logger.info(f"Watermark : {watermark}")
+        return watermark
 
-
-def extract(conn,sql):
+def extract(conn,sql,params = None):
     try:
         with conn.cursor(cursor_factory =RealDictCursor ) as curr:
-            curr.execute(sql)
+            curr.execute(sql,params)
             rows = curr.fetchall()
             logger.info(f"Extracted {len(rows)} from the table")
         return rows
@@ -217,6 +225,68 @@ def load_dim_payment_method(conn, payment_method_data):
         conn.rollback()
         logger.error(str(e))
         raise
+"""
+## 2. `etl.py` — implement the remaining dimension + fact columns
+
+- Add `extract_vehicle` / `load_dim_vehicle` following the pattern of the
+  existing dimension loaders.
+- Add `vehicle` and `time` to `load_lookup_dim`.
+- In `transform`, resolve `vehicle_key` and `time_key` for each trip
+  (remember `dim_time.time_key` is the requested time rounded **down** to
+  the nearest 15-minute bucket, e.g. 14:37 → `1430`).
+- Wire the new columns through `load_fact_trips`.
+
+"""
+
+def extract_vehicle(conn):
+    extract_vehicle_sql = """
+        SELECT
+        vehicle_id ,
+        plate_number ,
+        make ,
+        model ,
+        YEAR ,
+        color ,
+        category ,
+        is_active
+    FROM
+        vehicles v ;
+    """
+    return extract(conn , extract_vehicle_sql)
+
+def load_dim_vehicle(conn, vehicle_data):
+    insert_dim_vehicle_sql = """
+    INSERT
+        INTO
+        dim_vehicle (vehicle_id,
+        plate_number,
+        make,
+        model,
+        year,
+        color,
+        category,
+        is_active)
+    VALUES (%(vehicle_id)s,
+        %(plate_number)s,
+        %(make)s,
+        %(model)s ,
+        %(year)s,
+        %(color)s,
+        %(category)s,
+        %(is_active)s)
+    ON
+        CONFLICT DO NOTHING; 
+    """
+    try:
+        with conn.cursor() as curr :
+            curr.executemany(insert_dim_vehicle_sql,vehicle_data)
+            logger.info(f"{curr.rowcount} inserted into dim_vehicle")
+        conn.commit()
+    except Exception as e :
+        conn.rollback()
+        logger.error(str(e))
+        raise
+
 
 
 def extract_promo_code(conn):
@@ -255,7 +325,7 @@ def load_dim_promo_code(conn, promo_code_data):
         logger.error(str(e))
         raise
 
-def extract_trips(conn):
+def extract_trips(conn,watermark):
     extract_trip_sql = """
       SELECT
         t.trip_id,
@@ -265,6 +335,7 @@ def extract_trips(conn):
         t.dropoff_location_id,
         t.payment_method_id,
         t.promo_code_id,
+        t.vehicle_id,    
         t.base_fare,
         t.tip_amount,
         t.discount_amount,
@@ -278,9 +349,10 @@ def extract_trips(conn):
         tc.cancelled_by          -- from trip_cancellations (NULL for non-cancelled)
     FROM  trips t
     LEFT JOIN trip_cancellations tc ON t.trip_id = tc.trip_id
+    WHERE t.requested_at > %(watermark)s
     ORDER BY t.requested_at
         """
-    return extract(conn,extract_trip_sql)
+    return extract(conn,extract_trip_sql,{"watermark":watermark})
 
 def load_lookup_dim(conn):
     logger.info("Loading lookup table into memmory")
@@ -303,6 +375,13 @@ def load_lookup_dim(conn):
 
         curr.execute("SELECT date_key FROM dim_date")
         lookup["date"] = {r[0]: True for r in curr.fetchall()}
+
+        curr.execute("SELECT vehicle_id , vehicle_key FROM dim_vehicle")
+        lookup["vehicle"] = {r[0]:r[1] for r in curr.fetchall()}
+
+        curr.execute("SELECT time_key from dim_time")
+        lookup["time"] = {r[0]:True for r in curr.fetchall()}
+
     return lookup
 
 
@@ -317,6 +396,15 @@ def transform(oltp_row, lookups):
             logger.warning(f"trip {trip_id}: date_key {date_key} outside of dim_date range — skipped")
             skipped += 1
             continue
+
+        hour = row['requested_at'].hour
+        minute=row['requested_at'].minute
+        minute_bucket = (minute//15) *15
+        time_key = hour * 100 + minute_bucket
+        if time_key not in lookups["time"]:
+            logger.warning(f"trip {trip_id} : time_key for {row['requested_at']} not in dim_time - skipped")
+            skipped += 1
+            continue 
 
         driver_key = lookups["driver"].get(row["driver_id"])
         if driver_key is None:
@@ -341,6 +429,12 @@ def transform(oltp_row, lookups):
             logger.warning(f"trip {trip_id}: dropoff_location_id {row['dropoff_location_id']} not in dim_location — skipped")
             skipped += 1
             continue
+
+        vehicle_key = lookups["vehicle"].get(row["vehicle_id"])
+        if vehicle_key is None :
+            logger.warning(f"trip {trip_id}: vehicle_id {row['vehicle_id']} not in dim_vehicle - skipped")
+            skipped += 1
+            continue 
 
         # payment_method_id / promo_code_id are nullable in trips (e.g. no_show trips
         # have no payment method) and fact_trips allows NULL for both — only look
@@ -382,6 +476,8 @@ def transform(oltp_row, lookups):
             "dropoff_location_key": dropoff_location_key,
             "payment_method_key":   payment_method_key,
             "promo_code_key":       promo_code_key,
+            "time_key":             time_key,
+            "vehicle_key":          vehicle_key,
             "base_fare":            base_fare,
             "tip_amount":           tip_amount,
             "discount_amount":      discount_amount,
@@ -401,21 +497,23 @@ def transform(oltp_row, lookups):
 def load_fact_trips(conn, fact_data):
     insert_fact_trips_sql = """
  INSERT INTO fact_trips
-    (source_trip_id, date_key, driver_key, passenger_key,
+    (source_trip_id, date_key,time_key, driver_key, passenger_key,
      pickup_location_key, dropoff_location_key,
-     payment_method_key, promo_code_key,
+     payment_method_key, promo_code_key, vehicle_key,
      base_fare, tip_amount, discount_amount, fare_amount,
      distance_km, duration_minutes,
      driver_rating, passenger_rating,
      surge_multiplier, requested_at)
     VALUES ( %(source_trip_id)s,
              %(date_key)s,
+             %(time_key)s,
              %(driver_key)s,
              %(passenger_key)s,
              %(pickup_location_key)s,
              %(dropoff_location_key)s,
              %(payment_method_key)s,
              %(promo_code_key)s,
+             %(vehicle_key)s,
              %(base_fare)s,
              %(tip_amount)s,
              %(discount_amount)s,
@@ -465,8 +563,12 @@ def main():
         promo_code_data = extract_promo_code(src_conn)
         load_dim_promo_code(dst_conn, promo_code_data)
 
+        vehicle_data = extract_vehicle(src_conn)
+        load_dim_vehicle(dst_conn, vehicle_data)
+
         lookups = load_lookup_dim(dst_conn)
-        rows = extract_trips(src_conn)
+        watermark = get_watermark(dst_conn)
+        rows = extract_trips(src_conn,watermark)
         fact_rows = transform(rows, lookups)
         load_fact_trips(dst_conn, fact_rows)
 

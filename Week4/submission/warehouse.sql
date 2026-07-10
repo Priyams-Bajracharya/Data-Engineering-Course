@@ -160,3 +160,20 @@ FROM
     generate_series(0, 23) AS h,
     generate_series(0, 45, 15) AS m
 ORDER BY h, m;
+
+
+CREATE TABLE dim_vehicle (
+	vehicle_key serial PRIMARY KEY ,
+	vehicle_id integer NOT NULL UNIQUE,  --natural key from oltp 
+	plate_number varchar(20) NOT NULL ,
+	make varchar(50),
+	model varchar(50),
+	year int, 
+	color varchar(30),
+	category varchar(20) ,
+	is_active bool	NOT null
+	);
+
+ALTER TABLE fact_trips 
+ADD COLUMN vehicle_key integer REFERENCES dim_vehicle(vehicle_key),
+ADD COLUMN time_key integer NOT null REFERENCES dim_time(time_key);
