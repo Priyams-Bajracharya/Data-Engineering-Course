@@ -15,6 +15,15 @@ def transform(oltp_row, lookups):
             skipped += 1
             continue
 
+        hour= row["requested_at"].hour
+        minute = row["requested_at"].minute
+        minute_bucket =(minute // 15) *15
+        time_key = hour * 100 +minute_bucket
+        if time_key not in lookups["time"]:
+            logger.warning(f"trip {trip_id}: time_key {time_key} not in dim_time")
+            skipped += 1
+            continue
+
         driver_key = lookups["driver"].get(row["driver_id"])
         if driver_key is None:
             logger.warning(f"trip {trip_id}: driver_id {row['driver_id']} not in dim_driver — skipped")
@@ -38,6 +47,13 @@ def transform(oltp_row, lookups):
             logger.warning(f"trip {trip_id}: dropoff_location_id {row['dropoff_location_id']} not in dim_location — skipped")
             skipped += 1
             continue
+
+        vehicle_key = lookups["vehicle"].get(row["vehicle_id"])
+        if vehicle_key is None:
+            logger.warning(f"trip {trip_id}: vehicle_id {row['vehicle_id']} not in dim_vehicle — skipped")
+            skipped += 1
+            continue
+        
 
         # payment_method_id / promo_code_id are nullable in trips (e.g. no_show trips
         # have no payment method) and fact_trips allows NULL for both — only look
@@ -90,6 +106,9 @@ def transform(oltp_row, lookups):
             "passenger_rating":     row["passenger_rating"],
             "surge_multiplier":     surge_multiplier,
             "requested_at":         row["requested_at"],
+            "time_key":             time_key,
+            "vehicle_key":          vehicle_key,
+
         })
 
     logger.info(f"Transformed {len(fact_rows)} rows, skipped {skipped}")
