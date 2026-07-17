@@ -17,7 +17,6 @@ from extract import (
     extract_trips_incremental,
     extract_trips_full,
     extract_lookup_dim,
-    extract_vehicle,
     get_watermark
 )
 from load import (
@@ -26,15 +25,11 @@ from load import (
     load_dim_location,
     load_dim_payment_method,
     load_dim_promo_code,
-    load_dim_vehicle,
     load_fact_trips,
-    truncate_fact_trips,
 )
 from transform import transform
 
-from quality  import run_quality_checks, DataQualityError
-
-import sys
+from quality  import run_quality_checks
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Rides ETL pipeline")
@@ -89,9 +84,6 @@ def main():
         location_data = extract_location(src_conn)
         load_dim_location(dst_conn, location_data)
 
-        vehicle_data = extract_vehicle(src_conn)
-        load_dim_vehicle(dst_conn, vehicle_data)
-
         payment_method_data = extract_payment_method(src_conn)
         load_dim_payment_method(dst_conn, payment_method_data)
 
@@ -115,25 +107,12 @@ def main():
         fact_rows = transform(rows, lookups)
         logger.info(f"Transformation completed on {time.time() - time0:.2f}s")
 
-        if not fact_rows:
-            logger.info("No new rows to load - pipeline finished.")
-        else:
-            time0 = time.time()
-            run_quality_checks(fact_rows)
-            logger.info(f"Quality Check completed on {time.time() - time0:.2f}s")
-            time0 = time.time()
-
-            if mode == 'FULL':
-                truncate_fact_trips(dst_conn)
-            
-            load_fact_trips(dst_conn, fact_rows)
-            logger.info(f"Trip table load completed on {time.time() - time0:.2f}s")
-    except DataQualityError as e:
-        logger.error(f"QUALITY GATE FAILED: {e}")
-        sys.exit(1)
-    except Exception:
-        logger.exception("Pipeline failed")
-        sys.exit(1)
+        time0 = time.time()
+        run_quality_checks(fact_rows)
+        logger.info(f"Quality Check completed on {time.time() - time0:.2f}s")
+        time0 = time.time()
+        load_fact_trips(dst_conn, fact_rows)
+        logger.info(f"Trip table load completed on {time.time() - time0:.2f}s")
     finally:
         src_conn.close()
         dst_conn.close()
