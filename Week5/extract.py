@@ -35,6 +35,21 @@ def extract_driver(conn):
     """
     return extract(conn, extract_driver_sql)
 
+def extract_vehicle(conn):
+    extract_vehicle_sql = """
+    SELECT
+        vehicle_id,
+        plate_number,
+        make,
+        model,
+        year,
+        color,
+        category,
+        is_active
+    FROM
+        vehicles v;
+    """
+    return extract(conn, extract_vehicle_sql)
 
 def extract_passenger(conn):
     extract_passenger_sql = """
@@ -123,6 +138,7 @@ def extract_trips_incremental(conn,watermark):
         t.dropoff_location_id,
         t.payment_method_id,
         t.promo_code_id,
+        t.vehicle_id,
         t.base_fare,
         t.tip_amount,
         t.discount_amount,
@@ -151,6 +167,7 @@ def extract_trips_full(conn):
         t.dropoff_location_id,
         t.payment_method_id,
         t.promo_code_id,
+        t.vehicle_id,
         t.base_fare,
         t.tip_amount,
         t.discount_amount,
@@ -174,6 +191,12 @@ def extract_lookup_dim(conn):
     with conn.cursor() as curr:
         curr.execute("SELECT driver_id, driver_key FROM dim_driver")
         lookup["driver"] = {r[0]: r[1] for r in curr.fetchall()}
+
+        curr.execute("SELECT vehicle_id, vehicle_key FROM dim_vehicle")
+        lookup["vehicle"] = {r[0]:r[1] for r in curr.fetchall()}
+        
+        curr.execute("SELECT time_key from dim_time")
+        lookup["time"] = {r[0]: True for r in curr.fetchall()}
 
         curr.execute("SELECT passenger_id, passenger_key FROM dim_passenger")
         lookup["passenger"] = {r[0]: r[1] for r in curr.fetchall()}
